@@ -47,7 +47,10 @@ PA4 FLASH1_CS CS
 PC3 OSD1_CS CS
 SPIDEV osd SPI2 DEVID1 OSD1_CS MODE0 10*MHZ 10*MHZ
 define OSD_ENABLED 1
-ROMFS_WILDCARD libraries/AP_OSD/fonts/font*.bin
+define HAL_OSD_TYPE_DEFAULT 1
+# Keep analog OSD and its complete default character set within 1 MiB flash.
+# Alternate font styles are not bundled; upstream falls back to font 0.
+ROMFS font0.bin libraries/AP_OSD/fonts/font0.bin
 # The external flash JEDEC 0x852018 is recorded, but logging is not enabled
 # without checking the upstream driver's support for this part.
 
