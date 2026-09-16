@@ -30,6 +30,16 @@ PB6 I2C1_SCL I2C1
 PB7 I2C1_SDA I2C1
 # USB-powered register read confirmed chip ID 0x11 at 0x76 (SPA06 family).
 BARO SPL06 I2C:0:0x76
+# Keep the approved onboard barometer profile within 1 MiB flash.
+define AP_BARO_BACKEND_DEFAULT_ENABLED 0
+define AP_BARO_SPL06_ENABLED 1
+
+# Stock navigation with GPS; no video-transmitter control backends.
+define AP_GPS_ENABLED 1
+define AP_GPS_UBLOX_ENABLED 1
+define AP_VIDEOTX_ENABLED 0
+define AP_SMARTAUDIO_ENABLED 0
+define AP_TRAMP_ENABLED 0
 
 PB3 SPI3_SCK SPI3
 PB4 SPI3_MISO SPI3
