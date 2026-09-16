@@ -73,7 +73,7 @@ private:
     };
 
     AP_InertialSensor_LSM6DSV(AP_InertialSensor &imu,
-                              AP_HAL::OwnPtr<AP_HAL::Device> dev,
+                              AP_HAL::OwnPtr<AP_HAL::SPIDevice> dev,
                               enum Rotation rotation);
 
     bool init();
@@ -104,7 +104,7 @@ private:
 
     void poll_data();
 
-    AP_HAL::OwnPtr<AP_HAL::Device> _dev;
+    AP_HAL::OwnPtr<AP_HAL::SPIDevice> _dev;
     AP_HAL::Device::PeriodicHandle periodic_handle;
     enum Rotation _rotation;
     float _accel_scale;

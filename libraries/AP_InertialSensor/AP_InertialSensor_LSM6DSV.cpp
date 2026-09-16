@@ -184,7 +184,7 @@ constexpr uint16_t LSM6DSV_FIFO_BURST_BUFFER_SIZE = LSM6DSV_FIFO_BURST_WORDS * s
 }
 
 AP_InertialSensor_LSM6DSV::AP_InertialSensor_LSM6DSV(AP_InertialSensor &imu,
-                                                     AP_HAL::OwnPtr<AP_HAL::Device> dev,
+                                                     AP_HAL::OwnPtr<AP_HAL::SPIDevice> dev,
                                                      enum Rotation rotation)
     : AP_InertialSensor_Backend(imu)
     , _dev(std::move(dev))
@@ -556,7 +556,7 @@ bool AP_InertialSensor_LSM6DSV::read_fifo_words_block(const uint16_t n_words, ui
     _fifo_buffer[0] = LSM6DSV_REG_FIFO_DATA_OUT_TAG | LSM6DSV_SPI_READ_FLAG;
     // zero MOSI payload for SPI full-duplex read
     memset(_fifo_buffer + 1, 0, n_words * sizeof(RawFifoWord));
-    if (!_dev->transfer_fullduplex(_fifo_buffer, n_words * sizeof(RawFifoWord) + 1)) {
+    if (!_dev->transfer_fullduplex(_fifo_buffer, _fifo_buffer, n_words * sizeof(RawFifoWord) + 1)) {
         _inc_accel_error_count(accel_instance);
         _inc_gyro_error_count(gyro_instance);
         return false;
