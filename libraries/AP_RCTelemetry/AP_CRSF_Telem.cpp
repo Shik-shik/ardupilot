@@ -419,6 +419,9 @@ bool AP_CRSF_Telem::is_packet_ready(uint8_t idx, bool queue_empty)
         return _pending_request.frame_type > 0;
     case VTX_PARAMETERS:
 #if AP_VIDEOTX_ENABLED
+        if (AP::vtx().is_vt7550()) {
+            return false;
+        }
         return AP::vtx().have_params_changed() ||_vtx_power_change_pending || _vtx_freq_change_pending || _vtx_options_change_pending;
 #else
         return false;
@@ -579,7 +582,7 @@ void AP_CRSF_Telem::process_vtx_frame(VTXFrame* vtx) {
 
     // the user may have a VTX connected but not want AP to control it
     // (for instance because they are using myVTX on the transmitter)
-    if (!apvtx.get_enabled()) {
+    if (!apvtx.get_enabled() || apvtx.is_vt7550()) {
         return;
     }
 
@@ -627,7 +630,7 @@ void AP_CRSF_Telem::process_vtx_telem_frame(VTXTelemetryFrame* vtx)
 
     AP_VideoTX& apvtx = AP::vtx();
 
-    if (!apvtx.get_enabled()) {
+    if (!apvtx.get_enabled() || apvtx.is_vt7550()) {
         return;
     }
 
@@ -795,7 +798,7 @@ void AP_CRSF_Telem::update_vtx_params()
     AP_VideoTX& vtx = AP::vtx();
 
     // This function does ugly things with the vtx parameters which will upset other providers
-    if (!vtx.get_enabled() || !vtx.is_provider_enabled(AP_VideoTX::VTXType::CRSF)) {
+    if (!vtx.get_enabled() || vtx.is_vt7550() || !vtx.is_provider_enabled(AP_VideoTX::VTXType::CRSF)) {
         return;
     }
 

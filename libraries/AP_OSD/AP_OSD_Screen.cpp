@@ -2495,12 +2495,25 @@ void AP_OSD_Screen::draw_vtx_power(uint8_t x, uint8_t y)
     if (!vtx) {
         return;
     }
+    if (vtx->is_vt7550()) {
+        backend->write(x, y, !vtx->is_configuration_finished(), "%u:%s",
+                       unsigned(vtx->get_frequency_mhz()),
+                       vtx->get_pitmode() ? "PIT" : vtx->get_vt7550_power_label());
+        return;
+    }
     uint16_t powr = 0;
     // If currently in pit mode, just render 0mW to the screen
     if(!vtx->has_option(AP_VideoTX::VideoOptions::VTX_PITMODE)){
         powr = vtx->get_power_mw();
     }
-    backend->write(x, y, !vtx->is_configuration_finished(), "%4hu%c", powr, SYMBOL(SYM_MW));
+    const uint8_t band = vtx->get_configured_band();
+    const uint8_t channel = vtx->get_configured_channel();
+    const float pwr_w = powr / 1000.0f;
+    const bool valid_band_channel = AP_VideoTX::is_valid_band_channel(band, channel);
+    const char *band_name = valid_band_channel ? AP_VideoTX::band_names[band] : "?";
+    const char channel_name = valid_band_channel ? char('1' + channel) : '?';
+    backend->write(x, y, !vtx->is_configuration_finished(), "%5.5s%c:%3.1fW",
+                   band_name, channel_name, pwr_w);
 }
 #endif  // AP_VIDEOTX_ENABLED
 

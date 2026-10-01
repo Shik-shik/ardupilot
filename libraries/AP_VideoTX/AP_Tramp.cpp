@@ -16,6 +16,7 @@
 */
 
 #include "AP_Tramp.h"
+#include "AP_VideoTX_VT7550.h"
 #include <AP_Math/crc.h>
 #include <GCS_MAVLink/GCS.h>
 #include <AP_HAL/utility/sparse-endian.h>
@@ -94,11 +95,16 @@ char AP_Tramp::handle_response(void)
     case 'r': {
         const uint16_t min_freq = response_buffer[2]|(response_buffer[3] << 8);
         // Check we're not reading the request (indicated by freq zero)
-        if (min_freq != 0) {
+        if (min_freq != 0 || (AP::vtx().is_vt7550() &&
+            (response_buffer[6] != 0 || response_buffer[7] != 0))) {
             // Got response, update device limits
             device_limits.rf_freq_min = min_freq;
             device_limits.rf_freq_max = response_buffer[4]|(response_buffer[5] << 8);
             device_limits.rf_power_max = response_buffer[6]|(response_buffer[7] << 8);
+            if (AP::vtx().is_vt7550()) {
+                _vt_request_seen = false;
+                _vt_request_valid = false;
+            }
             debug("device limits: min freq: %u, max freq: %u, max power %u",
                 unsigned(device_limits.rf_freq_min), unsigned(device_limits.rf_freq_max), unsigned(device_limits.rf_power_max));
             return 'r';
@@ -111,6 +117,9 @@ char AP_Tramp::handle_response(void)
         if (freq != 0) {
             // Got response, update device status
             const uint16_t power = response_buffer[4]|(response_buffer[5] << 8);
+            if (AP::vtx().is_vt7550() && cur_control_mode != response_buffer[6]) {
+                _vt_request_seen = false;
+            }
             cur_control_mode = response_buffer[6]; // Currently only used for race lock
             const bool pit_mode = response_buffer[7];
             cur_act_power = response_buffer[8]|(response_buffer[9] << 8);
@@ -127,7 +136,27 @@ char AP_Tramp::handle_response(void)
                 vtx.set_channel(channel);
             }
 
-            vtx.set_power_mw(power);
+            switch (vtx.model()) {
+            case AP_VideoTX::Model::SKYZONE_VT7550:
+                vtx.set_vt7550_power_code(power);
+                // This field is not documented as measured milliwatts by Skyzone.
+                cur_act_power = UINT16_MAX;
+                break;
+            case AP_VideoTX::Model::D1:
+                // D1 normally reports dBm, but some firmware reports mW.
+                // Never pass a milliwatt status value to the dBm conversion.
+                if (AP_VideoTX::d1_status_is_dbm(power)) {
+                    vtx.set_power_dbm(static_cast<uint8_t>(power));
+                } else {
+                    const uint16_t power_mw = MIN(power, AP_VideoTX::D1_MAX_POWER_MW);
+                    debug("D1 reported %umW; using %umW", unsigned(power), unsigned(power_mw));
+                    vtx.set_power_mw(power_mw);
+                }
+                break;
+            default:
+                vtx.set_power_mw(power);
+            }
+
             if (pit_mode) {
                 vtx.set_options(vtx.get_options() | uint8_t(AP_VideoTX::VideoOptions::VTX_PITMODE));
             } else {
@@ -136,15 +165,26 @@ char AP_Tramp::handle_response(void)
 
             // make sure the configured values now reflect reality
             // if they do then announce if there were changes
-            if (!vtx.set_defaults() && update_pending && !vtx.have_params_changed()) {
-                vtx.announce_vtx_settings();
+            if (vtx.is_vt7550()) {
+                vtx.set_defaults();
+                const bool confirmed = _vt_request_valid && vtx.vt7550_configuration_matches();
+                if (confirmed && !vtx.is_configuration_finished()) {
+                    vtx.announce_vtx_settings();
+                }
+                vtx.set_configuration_finished(confirmed);
+                if (!confirmed && _vt_request_valid && retry_count == 0 && !_vt_retry_warning) {
+                    GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "VTX: VT7550 setting not confirmed");
+                    _vt_retry_warning = true;
+                }
+            } else {
+                if (!vtx.set_defaults() && update_pending && !vtx.have_params_changed()) {
+                    vtx.announce_vtx_settings();
+                }
+                vtx.set_configuration_finished(!update_pending);
             }
 
             debug("device config: freq: %u, cfg pwr: %umw, act pwr: %umw, pitmode: %u",
                 unsigned(freq), unsigned(power), unsigned(cur_act_power), unsigned(pit_mode));
-
-            // update the "_configuration_finished" flag, otherwise OSD item VTX_POWER blinks forever
-            vtx.set_configuration_finished(!update_pending);
 
             return 'v';
         }
@@ -295,6 +335,20 @@ void AP_Tramp::process_requests()
     // Read response from device
     const char replyCode = receive_response();
     const uint32_t now = AP_HAL::micros();
+    if (AP::vtx().is_vt7550()) {
+        if (replyCode != 0) {
+            _vt_last_response_us = now;
+        } else if (is_device_ready() && uint32_t(now - _vt_last_response_us) > 3000000U) {
+            AP::vtx().set_configuration_finished(false);
+            AP::vtx().set_vt7550_power_code(0);
+            AP::vtx().set_frequency_mhz(0);
+            device_limits = {};
+            _vt_request_seen = false;
+            _vt_request_valid = false;
+            retry_count = 0;
+            set_status(TrampStatus::TRAMP_STATUS_OFFLINE);
+        }
+    }
 
 #ifdef TRAMP_DEBUG
     if (replyCode != 0) {
@@ -341,6 +395,21 @@ void AP_Tramp::process_requests()
         // subsequent config updates if the config is now correct
         if (retry_count > 0 && ((now - last_time_us) >= TRAMP_MIN_REQUEST_PERIOD_US)) {
             AP_VideoTX& vtx = AP::vtx();
+            // Do not transmit a model-3 frequency unless it belongs to its explicit table.
+            if (vtx.is_milelrs_12ghz() && !vtx.valid_frequency_for_model(vtx.get_configured_frequency_mhz())) {
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "VTX: frequency outside 12GHz table");
+                vtx.set_configuration_finished(false);
+                retry_count = 0;
+                break;
+            }
+            // Enforce VT7550 limits on the actual send path, including startup.
+            if (vtx.is_vt7550() && (!_vt_request_valid ||
+                !VT7550::valid_frequency(vtx.get_configured_frequency_mhz(),
+                                        device_limits.rf_freq_min, device_limits.rf_freq_max))) {
+                vtx.set_configuration_finished(false);
+                retry_count = 0;
+                break;
+            }
             // Config retries remain and min request period exceeded, check freq
             if (!is_race_lock_enabled() && vtx.update_frequency()) {
                 debug("Updating frequency to %uMhz", vtx.get_configured_frequency_mhz());
@@ -350,9 +419,22 @@ void AP_Tramp::process_requests()
                 // Set flag
                 configUpdateRequired = true;
             } else if (!is_race_lock_enabled() && vtx.update_power()) {
-                debug("Updating power to %umw\n", vtx.get_configured_power_mw());
+                debug("Updating power to %umw (dbm: %u)\n", vtx.get_configured_power_mw(), vtx.get_configured_power_dbm());
                 // Power can be and needs to be updated, issue request
-                send_command('P', vtx.get_configured_power_mw());
+                uint16_t power = 0;
+                switch (vtx.model()) {
+                case AP_VideoTX::Model::SKYZONE_VT7550:
+                    power = VT7550::power_code(vtx.get_vt7550_power_level());
+                    break;
+                case AP_VideoTX::Model::D1:
+                    // D1 uses dBm and must never receive more than 34 dBm.
+                    power = MIN(static_cast<uint16_t>(vtx.get_configured_power_dbm()),
+                                static_cast<uint16_t>(AP_VideoTX::D1_MAX_POWER_DBM));
+                    break;
+                default:
+                    power = vtx.get_configured_power_mw();
+                }
+                send_command('P', power);
 
                 // Set flag
                 configUpdateRequired = true;
@@ -367,6 +449,9 @@ void AP_Tramp::process_requests()
             if (configUpdateRequired) {
                 // Update required, decrement retry count
                 retry_count--;
+                if (vtx.is_vt7550()) {
+                    vtx.set_configuration_finished(false);
+                }
 
                 // Update last time
                 last_time_us = now;
@@ -443,8 +528,12 @@ void AP_Tramp::set_frequency(uint16_t freq)
 {
     uint8_t freqValid;
 
-    // Check frequency valid
-    if (device_limits.rf_freq_min != 0 && device_limits.rf_freq_max != 0) {
+    // Check frequency valid. The custom 12 GHz model can use only its explicit table.
+    if (AP::vtx().is_milelrs_12ghz()) {
+        freqValid = AP::vtx().valid_frequency_for_model(freq) &&
+            (device_limits.rf_freq_min == 0 || device_limits.rf_freq_max == 0 ||
+             (freq >= device_limits.rf_freq_min && freq <= device_limits.rf_freq_max));
+    } else if (device_limits.rf_freq_min != 0 && device_limits.rf_freq_max != 0) {
         freqValid = (freq >= device_limits.rf_freq_min && freq <= device_limits.rf_freq_max);
     } else {
         freqValid = (freq >= VTX_TRAMP_MIN_FREQUENCY_MHZ && freq <= VTX_TRAMP_MAX_FREQUENCY_MHZ);
@@ -469,6 +558,18 @@ void AP_Tramp::update()
 
     AP_VideoTX& vtx = AP::vtx();
 
+    if (vtx.is_vt7550()) {
+        if (!vtx.get_enabled()) {
+            vtx.set_configuration_finished(false);
+            _vt_request_seen = false;
+            retry_count = 0;
+            return;
+        }
+        update_vt7550_request();
+        process_requests();
+        return;
+    }
+
     if (vtx.have_params_changed() && retry_count == 0) {
         // check changes in the order they will be processed
         if (vtx.update_frequency() || vtx.update_band() || vtx.update_channel()) {
@@ -488,6 +589,50 @@ void AP_Tramp::update()
     }
 
     process_requests();
+}
+
+void AP_Tramp::update_vt7550_request()
+{
+    AP_VideoTX& vtx = AP::vtx();
+    // Reconcile a direct frequency edit or a band/channel edit after startup.
+    // An inconsistent initial setup is rejected, not rewritten to a 5.8G band.
+    if (_vt_request_seen) {
+        if (vtx.get_configured_frequency_mhz() != _vt_request.frequency) {
+            AP_VideoTX::VideoBand band;
+            uint8_t channel;
+            if (VT7550::valid_frequency(vtx.get_configured_frequency_mhz()) &&
+                vtx.get_band_and_channel(vtx.get_configured_frequency_mhz(), band, channel)) {
+                vtx.set_configured_band(band);
+                vtx.set_configured_channel(channel);
+            }
+        } else if (vtx.get_configured_band() != _vt_request.band ||
+                   vtx.get_configured_channel() != _vt_request.channel) {
+            vtx.update_configured_frequency();
+        }
+    }
+
+    const bool changed = !_vt_request_seen ||
+        _vt_request.frequency != vtx.get_configured_frequency_mhz() ||
+        _vt_request.band != vtx.get_configured_band() ||
+        _vt_request.channel != vtx.get_configured_channel() ||
+        _vt_request.power != vtx.get_vt7550_power_level() ||
+        _vt_request.maximum != vtx.get_vt7550_power_max() ||
+        _vt_request.options != vtx.get_configured_options();
+    if (!changed) {
+        return;
+    }
+    _vt_request = {vtx.get_configured_frequency_mhz(), vtx.get_configured_band(),
+                   vtx.get_configured_channel(), vtx.get_vt7550_power_level(),
+                   vtx.get_vt7550_power_max(), vtx.get_configured_options()};
+    _vt_request_seen = true;
+    _vt_request_valid = vtx.vt7550_request_valid() &&
+        VT7550::valid_frequency(_vt_request.frequency, device_limits.rf_freq_min, device_limits.rf_freq_max);
+    retry_count = _vt_request_valid ? VTX_TRAMP_MAX_RETRIES : 0;
+    _vt_retry_warning = false;
+    vtx.set_configuration_finished(false);
+    if (!_vt_request_valid) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "VTX: invalid VT7550 frequency/power");
+    }
 }
 
 // we missed a response too many times - update the baud rate in case the temperature has increased

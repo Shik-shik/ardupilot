@@ -30,7 +30,7 @@
 #define VTX_TRAMP_POWER_COUNT 5
 
 #define VTX_TRAMP_MIN_FREQUENCY_MHZ 1000             //min freq in MHz
-#define VTX_TRAMP_MAX_FREQUENCY_MHZ 5999             //max freq in MHz
+#define VTX_TRAMP_MAX_FREQUENCY_MHZ 6100             //max freq in MHz
 // Maximum number of requests sent to try a config change
 // Some VTX fail to respond to every request (like Matek FCHUB-VTX) so
 // we sometimes need multiple retries to get the VTX to respond.
@@ -80,6 +80,21 @@ private:
     void set_pit_mode(uint8_t onoff);
     // change baud automatically when request-response fails many times
     void update_baud_rate();
+    void update_vt7550_request();
+
+    // A bounded retry budget per desired configuration, rearmed on reconnect.
+    struct {
+        uint16_t frequency;
+        uint8_t band;
+        uint8_t channel;
+        int8_t power;
+        int8_t maximum;
+        uint16_t options;
+    } _vt_request;
+    bool _vt_request_seen;
+    bool _vt_request_valid;
+    bool _vt_retry_warning;
+    uint32_t _vt_last_response_us;
 
     // serial interface
     AP_HAL::UARTDriver *port;                  // UART used to send data to Tramp VTX

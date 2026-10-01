@@ -43,7 +43,7 @@ bool AP_SmartAudio::init()
 {
     debug("SmartAudio init");
 
-    if (AP::vtx().get_enabled()==0) {
+    if (AP::vtx().get_enabled()==0 || AP::vtx().is_vt7550()) {
         debug("SmartAudio protocol it's not active");
         return false;
     }

@@ -21,12 +21,20 @@
 #include <AP_Param/AP_Param.h>
 
 #define VTX_MAX_CHANNELS 8
-#define VTX_MAX_POWER_LEVELS 10
+#define VTX_MAX_POWER_LEVELS 11
 
 class AP_VideoTX {
 public:
     AP_VideoTX();
     ~AP_VideoTX();
+
+    // VTX Model
+    enum class Model : uint8_t {
+        GENERIC = 0,
+        D1 = 1,
+        SKYZONE_VT7550 = 2,
+        MILELRS_12GHZ = 3
+    };
 
     /* Do not allow copies */
     CLASS_NO_COPY(AP_VideoTX);
@@ -67,8 +75,22 @@ public:
         BAND_X,
         BAND_3G3_A,
         BAND_3G3_B,
+        SKYZONE_A,
+        SKYZONE_B,
+        SKYZONE_C,
+        SKYZONE_D,
+        SKYZONE_E,
+        SKYZONE_F,
+        SKYZONE_H,
+        SKYZONE_J,
+        MILELRS_12G_A,
+        MILELRS_12G_B,
+        MILELRS_12G_C,
         MAX_BANDS
     };
+
+    static constexpr uint16_t D1_MAX_POWER_MW = 2500;
+    static constexpr uint8_t D1_MAX_POWER_DBM = 34;
 
     enum class PowerActive {
         Unknown,
@@ -94,7 +116,13 @@ public:
 
     static const uint16_t VIDEO_CHANNELS[MAX_BANDS][VTX_MAX_CHANNELS];
 
-    static uint16_t get_frequency_mhz(uint8_t band, uint8_t channel) { return VIDEO_CHANNELS[band][channel]; }
+    static constexpr bool is_valid_band_channel(int16_t band, int16_t channel) {
+        return band >= 0 && band < MAX_BANDS && channel >= 0 && channel < VTX_MAX_CHANNELS;
+    }
+    static constexpr bool d1_status_is_dbm(uint16_t power) { return power <= D1_MAX_POWER_DBM; }
+    static uint16_t get_frequency_mhz(int16_t band, int16_t channel) {
+        return is_valid_band_channel(band, channel) ? VIDEO_CHANNELS[band][channel] : 0;
+    }
     static bool get_band_and_channel(uint16_t freq, VideoBand& band, uint8_t& channel);
 
     void set_frequency_mhz(uint16_t freq) { _current_frequency = freq; }
@@ -113,7 +141,8 @@ public:
     void update_all_power_dbm(uint8_t nlevels, const uint8_t levels[]);
     void set_configured_power_mw(uint16_t power);
     uint16_t get_configured_power_mw() const { return _power_mw; }
-    uint16_t get_power_mw() const { return _power_levels[_current_power].mw; }
+    // UINT16_MAX means RF power is unknown; VT7550 consumers must use labels.
+    uint16_t get_power_mw() const { return is_vt7550() ? UINT16_MAX : _power_levels[_current_power].mw; }
 
     // get the power in dbm, rounding appropriately
     uint8_t get_configured_power_dbm() const {
@@ -131,6 +160,9 @@ public:
     bool update_power() const;
     // change the video power based on switch input
     void change_power(int8_t position);
+    // change the video frequency based on switch input
+    void change_band_channel(int8_t position);
+
     // get / set the frequency band
     void set_band(uint8_t band) { _current_band = band; }
     void set_configured_band(uint8_t band) { _band.set_and_save_ifchanged(band); }
@@ -157,6 +189,17 @@ public:
     void set_enabled(bool enabled);
     bool get_enabled() const { return _enabled; }
     bool update_enabled() const { return _defaults_set && _enabled != _current_enabled; }
+
+    Model model() const { return _initialized ? _active_model : static_cast<Model>(static_cast<uint8_t>(_model)); }
+    bool is_vt7550() const { return model() == Model::SKYZONE_VT7550; }
+    bool is_milelrs_12ghz() const { return model() == Model::MILELRS_12GHZ; }
+    bool valid_frequency_for_model(uint16_t mhz) const;
+    bool vt7550_request_valid() const;
+    bool vt7550_configuration_matches() const;
+    int8_t get_vt7550_power_level() const;
+    int8_t get_vt7550_power_max() const { return _vt_power_max; }
+    void set_vt7550_power_code(uint16_t code);
+    const char *get_vt7550_power_label() const;
 
     // have the parameters been updated
     bool have_params_changed() const;
@@ -197,12 +240,22 @@ private:
     AP_Int8 _channel;
     uint8_t _current_channel;
 
+    AP_Int8 _bc_band[6];
+    AP_Int8 _bc_channel[6];
+
     // vtx options
     AP_Int16 _options;
     uint16_t _current_options;
 
     AP_Int8 _enabled;
     bool _current_enabled;
+
+    // VTX model
+    AP_Int8 _model;
+    Model _active_model;
+    AP_Int8 _vt_power_level;
+    AP_Int8 _vt_power_max;
+    int8_t _vt_current_level = -1;
 
     bool _initialized;
     // when defaults have been configured
